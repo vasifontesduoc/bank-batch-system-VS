@@ -2,7 +2,9 @@ package com.bancoxyz.ms_fraude.config;
 
 import com.bancoxyz.ms_fraude.event.RetiroEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -10,7 +12,14 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
+import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -19,6 +28,10 @@ import java.util.Map;
  * Configuracion manual del consumidor Kafka (la autoconfiguracion de Spring
  * Boot no estaba activando @KafkaListener en esta version, asi que se
  * define aqui explicitamente).
+ *
+ * Incluye manejo de errores con reintentos + backoff fijo y, si el mensaje
+ * sigue fallando, lo envia a un topico de dead-letter (retiros-topic.DLT)
+ * en vez de bloquear el consumo o perder el mensaje silenciosamente.
  */
 @Configuration
 @EnableKafka
@@ -46,12 +59,37 @@ public class KafkaConsumerConfig {
         return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(), deserializer);
     }
 
+    // Productor auxiliar, usado solo para publicar en el topico de dead-letter.
+    @Bean
+    public ProducerFactory<String, Object> dlqProducerFactory() {
+        Map<String, Object> config = new HashMap<>();
+        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
+        return new DefaultKafkaProducerFactory<>(config);
+    }
+
+    @Bean
+    public KafkaTemplate<String, Object> dlqKafkaTemplate(ProducerFactory<String, Object> dlqProducerFactory) {
+        return new KafkaTemplate<>(dlqProducerFactory);
+    }
+
+    @Bean
+    public DefaultErrorHandler kafkaErrorHandler(KafkaTemplate<String, Object> dlqKafkaTemplate) {
+        DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(dlqKafkaTemplate);
+        // 2 reintentos con 1 segundo de espera entre cada uno antes de mandar a DLQ
+        FixedBackOff backOff = new FixedBackOff(1000L, 2);
+        return new DefaultErrorHandler(recoverer, backOff);
+    }
+
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> kafkaListenerContainerFactory(
-            ConsumerFactory<String, RetiroEvent> consumerFactory) {
+            ConsumerFactory<String, RetiroEvent> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler) {
         ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setCommonErrorHandler(kafkaErrorHandler);
         return factory;
     }
 }

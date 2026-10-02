@@ -13,11 +13,6 @@ import org.springframework.kafka.support.serializer.JsonSerializer;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Bean explicito del productor Kafka. Se define aqui manualmente (en vez de
- * depender de la autoconfiguracion de Spring Boot) porque en esta version
- * el KafkaTemplate no se estaba creando automaticamente.
- */
 @Configuration
 public class KafkaProducerConfig {
 
@@ -31,6 +26,14 @@ public class KafkaProducerConfig {
         config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class);
         config.put(JsonSerializer.ADD_TYPE_INFO_HEADERS, false);
+
+        // Productor idempotente: evita que reintentos del propio productor
+        // generen mensajes duplicados en Kafka (garantia de entrega "exactly once"
+        // a nivel de particion, sin necesidad de transacciones completas).
+        config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        config.put(ProducerConfig.ACKS_CONFIG, "all");
+        config.put(ProducerConfig.RETRIES_CONFIG, 3);
+
         return new DefaultKafkaProducerFactory<>(config);
     }
 

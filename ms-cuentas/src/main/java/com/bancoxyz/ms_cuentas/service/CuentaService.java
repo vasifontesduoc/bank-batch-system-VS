@@ -15,10 +15,13 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Única capa de lógica de negocio/datos de todo el sistema. Como este
@@ -32,6 +35,14 @@ import java.util.List;
  * "RetiroRealizado" en Kafka (retiros-topic). ms-cuentas no conoce ni
  * depende de quién consuma ese evento — así se conectan ms-fraude y
  * ms-notificaciones sin acoplarse a esta clase.
+ *
+ * El evento se publica recién DESPUÉS de que la transacción de BD hace
+ * commit (TransactionSynchronization.afterCommit): si el retiro se revierte
+ * por cualquier motivo, nunca se publica un evento "fantasma" para una
+ * operación que no ocurrió. Junto al productor idempotente de Kafka
+ * (enable.idempotence=true en KafkaProducerConfig), esto cubre la
+ * consistencia entre persistencia y publicación de eventos sin necesitar
+ * una tabla Outbox separada.
  */
 @Service
 public class CuentaService {
@@ -110,9 +121,20 @@ public class CuentaService {
         movimiento.setDescripcion("Retiro cajero automático");
         movimientosRepository.save(movimiento);
 
-        retiroEventProducer.publicarRetiroRealizado(
-                new RetiroEvent(cuentaId, monto, saldoNuevo, "Retiro cajero automático",
-                        LocalDateTime.now().toString()));
+        String eventId = UUID.randomUUID().toString();
+        RetiroEvent evento = new RetiroEvent(eventId, cuentaId, monto, saldoNuevo,
+                "Retiro cajero automático", LocalDateTime.now().toString());
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    retiroEventProducer.publicarRetiroRealizado(evento);
+                }
+            });
+        } else {
+            retiroEventProducer.publicarRetiroRealizado(evento);
+        }
 
         return new RetiroResponse(cuentaId, monto, saldoActual, saldoNuevo, hoy);
     }
