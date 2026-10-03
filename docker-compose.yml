@@ -1,4 +1,23 @@
 services:
+
+  # ---------------- Infraestructura ----------------
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: banco_xyz
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - bank-network
+
   kafka:
     image: apache/kafka:3.7.0
     container_name: kafka
@@ -8,7 +27,7 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
@@ -19,3 +38,176 @@ services:
       interval: 10s
       timeout: 10s
       retries: 5
+    networks:
+      - bank-network
+
+  # ---------------- Spring Cloud ----------------
+
+  eureka-server:
+    build: ./eureka-server
+    image: eureka-server:s8
+    container_name: eureka-server
+    ports:
+      - "8761:8761"
+    networks:
+      - bank-network
+
+  config-server:
+    build: ./config-server
+    image: config-server:s8
+    container_name: config-server
+    ports:
+      - "8888:8888"
+    networks:
+      - bank-network
+
+  auth-server:
+    build: ./auth-server
+    image: auth-server:s8
+    container_name: auth-server
+    ports:
+      - "9000:9000"
+    environment:
+      AUTHSERVER_ISSUER: http://auth-server:9000
+    networks:
+      - bank-network
+
+  # ---------------- Microservicios ----------------
+
+  ms-cuentas:
+    build: ./ms-cuentas
+    image: ms-cuentas:s8
+    container_name: ms-cuentas
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_xyz?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
+    networks:
+      - bank-network
+
+  ms-fraude:
+    build: ./ms-fraude
+    image: ms-fraude:s8
+    container_name: ms-fraude
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
+    networks:
+      - bank-network
+
+  ms-notificaciones:
+    build: ./ms-notificaciones
+    image: ms-notificaciones:s8
+    container_name: ms-notificaciones
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    restart: on-failure
+    networks:
+      - bank-network
+
+  # ---------------- BFFs ----------------
+
+  bff-web:
+    build: ./bff-web
+    image: bff-web:s8
+    container_name: bff-web
+    ports:
+      - "8443:8443"
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      auth-server:
+        condition: service_started
+      ms-cuentas:
+        condition: service_started
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      MS_CUENTAS_BASE_URL: http://ms-cuentas:8090
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://auth-server:9000
+    restart: on-failure
+    networks:
+      - bank-network
+
+  bff-mobile:
+    build: ./bff-mobile
+    image: bff-mobile:s8
+    container_name: bff-mobile
+    ports:
+      - "8444:8444"
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      auth-server:
+        condition: service_started
+      ms-cuentas:
+        condition: service_started
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      MS_CUENTAS_BASE_URL: http://ms-cuentas:8090
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://auth-server:9000
+    restart: on-failure
+    networks:
+      - bank-network
+
+  bff-cajero:
+    build: ./bff-cajero
+    image: bff-cajero:s8
+    container_name: bff-cajero
+    ports:
+      - "8445:8445"
+    depends_on:
+      config-server:
+        condition: service_started
+      eureka-server:
+        condition: service_started
+      auth-server:
+        condition: service_started
+      ms-cuentas:
+        condition: service_started
+    environment:
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://eureka-server:8761/eureka/
+      MS_CUENTAS_BASE_URL: http://ms-cuentas:8090
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://auth-server:9000
+    restart: on-failure
+    networks:
+      - bank-network
+
+networks:
+  bank-network:
+    driver: bridge
