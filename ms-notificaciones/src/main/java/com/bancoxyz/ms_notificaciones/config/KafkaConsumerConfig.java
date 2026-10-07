@@ -1,5 +1,6 @@
 package com.bancoxyz.ms_notificaciones.config;
 
+import com.bancoxyz.ms_notificaciones.event.PagoEvent;
 import com.bancoxyz.ms_notificaciones.event.RetiroEvent;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -26,7 +27,9 @@ import java.util.Map;
 
 /**
  * Configuracion manual del consumidor Kafka, con reintentos + backoff fijo
- * y dead-letter topic (retiros-topic.DLT) para mensajes que sigan fallando.
+ * y dead-letter topic para mensajes que sigan fallando.
+ * Mantiene dos factories separadas: una para RetiroEvent (retiros-topic,
+ * ya existente desde S7/S8) y otra para PagoEvent (pagos-topic, nueva en S9).
  */
 @Configuration
 @EnableKafka
@@ -37,6 +40,8 @@ public class KafkaConsumerConfig {
 
     @Value("${spring.kafka.consumer.group-id}")
     private String groupId;
+
+    // ---------- RetiroEvent (ya existente) ----------
 
     @Bean
     public ConsumerFactory<String, RetiroEvent> consumerFactory() {
@@ -53,6 +58,48 @@ public class KafkaConsumerConfig {
 
         return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(), deserializer);
     }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> kafkaListenerContainerFactory(
+            ConsumerFactory<String, RetiroEvent> consumerFactory,
+            DefaultErrorHandler kafkaErrorHandler) {
+        ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory);
+        factory.setCommonErrorHandler(kafkaErrorHandler);
+        return factory;
+    }
+
+    // ---------- PagoEvent (nuevo en S9) ----------
+
+    @Bean
+    public ConsumerFactory<String, PagoEvent> consumerFactoryPagos() {
+        Map<String, Object> config = new HashMap<>();
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, groupId + "-pagos");
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+
+        JsonDeserializer<PagoEvent> deserializer = new JsonDeserializer<>(PagoEvent.class);
+        deserializer.setUseTypeHeaders(false);
+        deserializer.addTrustedPackages("*");
+
+        return new DefaultKafkaConsumerFactory<>(config, new StringDeserializer(), deserializer);
+    }
+
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, PagoEvent> kafkaListenerContainerFactoryPagos(
+            ConsumerFactory<String, PagoEvent> consumerFactoryPagos,
+            DefaultErrorHandler kafkaErrorHandler) {
+        ConcurrentKafkaListenerContainerFactory<String, PagoEvent> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactoryPagos);
+        factory.setCommonErrorHandler(kafkaErrorHandler);
+        return factory;
+    }
+
+    // ---------- Infraestructura compartida (DLQ) ----------
 
     @Bean
     public ProducerFactory<String, Object> dlqProducerFactory() {
@@ -73,16 +120,5 @@ public class KafkaConsumerConfig {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(dlqKafkaTemplate);
         FixedBackOff backOff = new FixedBackOff(1000L, 2);
         return new DefaultErrorHandler(recoverer, backOff);
-    }
-
-    @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> kafkaListenerContainerFactory(
-            ConsumerFactory<String, RetiroEvent> consumerFactory,
-            DefaultErrorHandler kafkaErrorHandler) {
-        ConcurrentKafkaListenerContainerFactory<String, RetiroEvent> factory =
-                new ConcurrentKafkaListenerContainerFactory<>();
-        factory.setConsumerFactory(consumerFactory);
-        factory.setCommonErrorHandler(kafkaErrorHandler);
-        return factory;
     }
 }
