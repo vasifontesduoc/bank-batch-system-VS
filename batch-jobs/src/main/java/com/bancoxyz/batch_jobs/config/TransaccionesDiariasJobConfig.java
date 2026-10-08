@@ -29,10 +29,19 @@ import org.springframework.dao.TransientDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.ItemWriteListener;
+import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.support.SynchronizedItemStreamReader;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+
 import javax.sql.DataSource;
 
 @Configuration
 public class TransaccionesDiariasJobConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(TransaccionesDiariasJobConfig.class);
 
     @Bean
     public JdbcTemplate jdbcTemplate(DataSource dataSource) {
@@ -87,12 +96,22 @@ public class TransaccionesDiariasJobConfig {
     @Bean
     public Step procesarMovimientosStep(JobRepository jobRepository,
                                          PlatformTransactionManager transactionManager,
-                                         ItemReader<MovimientoDiarioRaw> movimientoReader,
+                                         FlatFileItemReader<MovimientoDiarioRaw> movimientoReader,
                                          MovimientoItemProcessor movimientoProcessor,
                                          ItemWriter<MovimientoProcesado> movimientoWriter) {
+        // Paralelismo: el reader de archivo no es thread-safe, por eso se desactiva
+        // el guardado de estado y se envuelve en un reader sincronizado.
+        movimientoReader.setSaveState(false);
+        SynchronizedItemStreamReader<MovimientoDiarioRaw> readerSincronizado = new SynchronizedItemStreamReader<>();
+        readerSincronizado.setDelegate(movimientoReader);
+
+        // Step multi-hilo: hasta 4 workers procesan chunks en paralelo.
+        SimpleAsyncTaskExecutor executor = new SimpleAsyncTaskExecutor("batch-worker-");
+        executor.setConcurrencyLimit(4);
+
         return new StepBuilder("procesarMovimientosStep", jobRepository)
                 .<MovimientoDiarioRaw, MovimientoProcesado>chunk(50, transactionManager)
-                .reader(movimientoReader)
+                .reader(readerSincronizado)
                 .processor(movimientoProcessor)
                 .writer(movimientoWriter)
                 .faultTolerant()
@@ -101,6 +120,14 @@ public class TransaccionesDiariasJobConfig {
                 .skipLimit(1000)
                 .retry(TransientDataAccessException.class)
                 .retryLimit(3)
+                .taskExecutor(executor)
+                .listener(new ItemWriteListener<MovimientoProcesado>() {
+                    @Override
+                    public void afterWrite(Chunk<? extends MovimientoProcesado> items) {
+                        log.info("PARALELO: chunk de {} registros escrito por el hilo {}",
+                                items.size(), Thread.currentThread().getName());
+                    }
+                })
                 .build();
     }
 
