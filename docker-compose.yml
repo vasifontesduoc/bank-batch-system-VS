@@ -99,7 +99,6 @@ services:
   ms-clientes:
     build: ./ms-clientes
     image: ms-clientes:s9
-    container_name: ms-clientes
     depends_on:
       config-server:
         condition: service_started
@@ -120,7 +119,6 @@ services:
   ms-pagos:
     build: ./ms-pagos
     image: ms-pagos:s9
-    container_name: ms-pagos
     depends_on:
       config-server:
         condition: service_started
