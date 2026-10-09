@@ -117,3 +117,17 @@ SELECT COUNT(*) FROM estados_cuenta_anuales;
 cd ..
 docker compose down
 ```
+
+## Seguridad entre microservicios (clave interna)
+
+Las rutas `/internal/**` de ms-cuentas, ms-pagos y ms-clientes exigen la cabecera `X-Internal-Key`. La clave (`internal.api.key`) la entrega el Config Server, así que si se cambia hay que reconstruir `config-server` y reiniciar los servicios.
+
+```bash
+# Sin clave -> 401
+docker exec bank-batch-system-vs-ms-pagos-1 curl -s -o /dev/null -w "%{http_code}\n" http://ms-cuentas:8090/internal/cuentas/1/estado
+
+# Con clave -> 200
+docker exec bank-batch-system-vs-ms-pagos-1 curl -s -w "\n%{http_code}\n" -H "X-Internal-Key: banco-xyz-internal-2024-key" http://ms-cuentas:8090/internal/cuentas/1/estado
+```
+
+Todas las pruebas con `docker exec` contra `/internal/**` de las secciones anteriores deben incluir `-H "X-Internal-Key: banco-xyz-internal-2024-key"`.

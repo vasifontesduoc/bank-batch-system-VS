@@ -58,3 +58,7 @@ Este documento describe cómo llevar el ecosistema de microservicios (actualment
 ## 4. Consideraciones de costo/escalado
 
 Los microservicios de solo-lectura o baja carga (`ms-clientes`) pueden correr con 1 réplica mínima; `ms-cuentas` y `ms-pagos`, al ser el punto central de escritura, deben escalar horizontalmente según carga. El Auto Scaling de ECS se configura sobre la métrica de CPU y, idealmente, sobre el tamaño de la cola de Kafka pendiente por consumir.
+
+## Gestión de la clave interna entre microservicios
+
+En local, `internal.api.key` vive en `config-server/config-repo/application.properties`. En AWS no debe versionarse: se guarda en AWS Secrets Manager (o SSM Parameter Store) y se inyecta como variable de entorno `INTERNAL_API_KEY` en las task definitions de ECS de ms-cuentas, ms-pagos, ms-clientes y los tres BFF. Se recomienda rotarla periódicamente y, a futuro, reemplazarla por JWT por servicio o mTLS.
